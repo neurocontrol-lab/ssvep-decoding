@@ -58,8 +58,9 @@ def main():
         win = visual.Window(size=(1280, 720), fullscr=not args.windowed, screen=args.screen,
                             units="pix", color=-0.6, waitBlanking=True)
         measured = win.getActualFrameRate(nIdentical=20, nMaxFrames=120, nWarmUpFrames=30)
+        measured = float(measured) if measured is not None else None
         report["observed_refresh_hz"] = measured
-        mismatch = measured is None or abs(measured/s["refresh_hz"]-1) > 0.02
+        mismatch = bool(measured is None or abs(measured/s["refresh_hz"]-1) > 0.02)
         report["refresh_mismatch"] = mismatch
         if mismatch and not args.allow_refresh_mismatch:
             raise ValueError(f"Refresh {measured} differs from profile {s['refresh_hz']} Hz or is unstable. Adjust profile; use --allow-refresh-mismatch only for preview.")

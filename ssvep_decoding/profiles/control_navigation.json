@@ -1,0 +1,5 @@
+{
+  "target_actions": {"forward": "forward", "backward": "backward", "left": "turn_left", "right": "turn_right"},
+  "action_keys": {"forward": "w", "backward": "s", "turn_left": "left", "turn_right": "right"},
+  "key_pulse_seconds": 0.12
+}

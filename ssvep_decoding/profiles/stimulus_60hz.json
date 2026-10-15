@@ -1,0 +1,11 @@
+{
+  "name": "development_60hz",
+  "refresh_hz": 60,
+  "target_size_px": 140,
+  "targets": [
+    {"id": "forward", "period_frames": 7, "bright_frames": 3, "reference_hz": null, "position": [0, 0.65]},
+    {"id": "backward", "period_frames": 6, "bright_frames": 3, "reference_hz": null, "position": [0, -0.65]},
+    {"id": "left", "period_frames": 5, "bright_frames": 2, "reference_hz": null, "position": [-0.75, 0]},
+    {"id": "right", "period_frames": 4, "bright_frames": 2, "reference_hz": null, "position": [0.75, 0]}
+  ]
+}

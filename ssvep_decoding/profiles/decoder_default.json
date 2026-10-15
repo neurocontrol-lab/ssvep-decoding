@@ -1,0 +1,13 @@
+{
+  "window_seconds": 2,
+  "update_seconds": 0.25,
+  "warmup_seconds": 1,
+  "bandpass_hz": [6, 48],
+  "filter_order": 4,
+  "notch_hz": null,
+  "harmonics": 3,
+  "min_score": 0.55,
+  "min_margin": 0.1,
+  "persistence_seconds": 0.75,
+  "repeat_seconds": 0.75
+}

@@ -1,0 +1,11 @@
+{
+  "sample_rate_hz": 250,
+  "channels": ["D1", "D2", "D3", "D4"],
+  "baud": 460800,
+  "adc_max": 4095,
+  "max_interval_error_fraction": 0.25,
+  "max_scan_fraction": 0.9,
+  "max_live_lag_seconds": 0.5,
+  "flat_span_counts": 4,
+  "max_rail_fraction": 0.01
+}

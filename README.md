@@ -114,13 +114,17 @@ python -m ssvep_decoding live --port COM3 --keyboard --window-title "SSVEP Navig
 
 Keyboard output is opt-in for each run. The title substring must match the foreground window; opening another window suppresses key-down events. A separate watchdog releases a held key after its pulse duration or focus loss; invalid/no-command updates and normal exit also release it. Ctrl+C disarms. The adapter supports W/A/S/D and arrow keys; it does not connect to the game process or provide a network command protocol. Windows privilege differences may prevent input injection. OS/process crashes cannot guarantee cleanup, so initial development should use logged output.
 
+## Recorded development results
+
+[Round 1: single-target SSVEP decoding (16 October 2026)](docs/results/2026-10-16-round-01.md) documents the first four target recordings, left/right repeats, and a separate rest baseline. The report includes recording IDs, acquisition/display timing, CCA score comparisons, temporal decisions, exploratory threshold replay, and analysis limitations. Single-target response evidence was observed, while reliable command control and simultaneous four-target accuracy remain unestablished.
+
 ## Verification and remaining work
 
 ```powershell
 python -m unittest discover -s tests -v
 ```
 
-Tests cover noisy phase-shifted synthetic classification, rank-deficient channels, ambiguous harmonics, persistence, gaps/jitter/reset handling, raw-file replay and session logging, profile validation, frame sequences, and disabled keyboard output in synthetic mode. GUI/optical timing, live MG24 operation, and Windows key delivery need hardware/interactive testing. No measured on-body decoding accuracy is claimed.
+Tests cover noisy phase-shifted synthetic classification, rank-deficient channels, ambiguous harmonics, persistence, gaps/jitter/reset handling, raw-file replay and session logging, profile validation, frame sequences, and disabled keyboard output in synthetic mode. Initial live MG24 and PsychoPy single-target recordings are documented in the results report above. Synchronized optical/EEG timing, simultaneous four-target evaluation, and Windows key delivery still require testing. No validated on-body decoding accuracy is claimed.
 
 Future work: timestamp/marker synchronization, cued EEG evaluation and threshold calibration, signal inspection plots, additional equipment adapters, filter-bank CCA if justified, and a direct command transport for navigation integration.
 

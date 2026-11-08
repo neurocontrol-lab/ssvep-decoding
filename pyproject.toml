@@ -16,6 +16,9 @@ stimulus = ["psychopy>=2024.2"]
 ssvep-decoding = "ssvep_decoding.cli:main"
 ssvep-stimulus = "ssvep_decoding.stimulus:main"
 
+[project.gui-scripts]
+ssvep-tests = "ssvep_decoding.launcher:main"
+
 [tool.setuptools.packages.find]
 include = ["ssvep_decoding*"]
 

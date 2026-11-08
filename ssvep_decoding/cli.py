@@ -36,7 +36,7 @@ def launcher_stop_signal(enabled):
                 # Use the raw descriptor so shutdown cannot wait on a
                 # buffered stdin lock held by this daemon thread.
                 os.read(sys.stdin.fileno(), 1)
-            except (OSError, ValueError):
+            except (OSError, ValueError, AttributeError):
                 pass
             finally:
                 stopped.set()
@@ -60,6 +60,7 @@ def run(args):
     directory = args.session or Path("sessions") / datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     directory.mkdir(parents=True, exist_ok=False)
     launcher_stopped = launcher_stop_signal(getattr(args, "stop_on_stdin", False))
+    ready_file = getattr(args, "ready_file", None)
     source = keyboard = maze = None
     reason, received, updates, commands = "complete", 0, 0, 0
     started = time.perf_counter()
@@ -100,6 +101,8 @@ def run(args):
                     break
                 received += 1
                 writer.writerow(frame.row)
+                if received == 1 and ready_file is not None:
+                    ready_file.touch(exist_ok=False)
                 result = pipeline.feed(frame)
                 if maze:
                     if result is not None:
@@ -173,6 +176,7 @@ def main():
         else:
             mode.add_argument("--port", required=True)
             mode.add_argument("--stop-on-stdin", action="store_true", help=argparse.SUPPRESS)
+            mode.add_argument("--ready-file", type=Path, help=argparse.SUPPRESS)
             output = mode.add_mutually_exclusive_group()
             output.add_argument("--maze-hud", action="store_true", help="Show live scores in the local maze without steering")
             output.add_argument("--maze-control", action="store_true", help="Send accepted commands to the maze; steering starts automatically in the focused game")

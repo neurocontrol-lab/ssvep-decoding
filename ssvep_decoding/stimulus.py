@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import time
 
-from .cli import load_profiles, profile_arguments
+from .cli import launcher_stop_signal, load_profiles, profile_arguments
 
 
 def bright_at(frame, target):
@@ -34,9 +34,18 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--screen", type=int, default=0)
     parser.add_argument("--windowed", action="store_true")
+    parser.add_argument("--size", type=int, nargs=2, metavar=("WIDTH", "HEIGHT"), default=(1280, 720),
+                        help="Stimulus window size in pixels when windowed")
     parser.add_argument("--session", type=Path)
+    parser.add_argument("--ready-file", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--start-file", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--stop-on-stdin", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--allow-refresh-mismatch", action="store_true", help="Preview only; logs mismatch")
     args = parser.parse_args()
+    if bool(args.ready_file) != bool(args.start_file):
+        parser.error("Managed stimulus startup requires both readiness and start paths.")
+    if not (320 <= args.size[0] <= 16384 and 240 <= args.size[1] <= 16384):
+        parser.error("Window size must be at least 320 x 240 and at most 16384 x 16384.")
     profiles = load_profiles(args)
     s = profiles["stimulus"]
     ids = [target["id"] for target in s["targets"]]
@@ -51,11 +60,12 @@ def main():
     directory = args.session or Path("sessions") / ("stimulus_"+datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
     directory.mkdir(parents=True, exist_ok=False)
     win = None
+    stopped = launcher_stop_signal(args.stop_on_stdin)
     records = []
     report = {"stimulus_profile": s, "seed": args.seed, "single": args.single,
               "host_clock": "time.perf_counter; not synchronized to MCU", "status": "starting"}
     try:
-        win = visual.Window(size=(1280, 720), fullscr=not args.windowed, screen=args.screen,
+        win = visual.Window(size=args.size, fullscr=not args.windowed, screen=args.screen,
                             units="pix", color=-0.6, waitBlanking=True)
         measured = win.getActualFrameRate(nIdentical=20, nMaxFrames=120, nWarmUpFrames=30)
         measured = float(measured) if measured is not None else None
@@ -72,9 +82,17 @@ def main():
             boxes.append(visual.Rect(win, width=size, height=size, pos=position, lineColor=0))
             labels.append(visual.TextStim(win, text=target["id"], height=18,
                                           pos=(position[0], position[1]-size/2-20)))
-        message = visual.TextStim(win, text="SPACE: start | ESC: exit", height=22, wrapWidth=600)
+        prompt = "Waiting for EEG | ESC: cancel" if args.start_file else "SPACE: start | ESC: exit"
+        message = visual.TextStim(win, text=prompt, height=22, wrapWidth=600)
         message.draw(); win.flip()
-        if "escape" in event.waitKeys(keyList=["space", "escape"]):
+        if args.start_file:
+            args.ready_file.touch(exist_ok=False)
+            while not args.start_file.exists():
+                if stopped.is_set() or "escape" in event.getKeys(keyList=["escape"]):
+                    report["status"] = "cancelled"
+                    return 0
+                message.draw(); win.flip()
+        elif "escape" in event.waitKeys(keyList=["space", "escape"]):
             report["status"] = "cancelled"
             return 0
         plan = trial_plan([t["id"] for t in targets], args.repeats, args.cue_seconds,
@@ -88,7 +106,7 @@ def main():
             marker = {"trial": trial, "cue": cue, "first_frame_index": frame_index,
                       "frame_count": count, "host_perf_counter_before_flip": time.perf_counter()}
             for i in range(count):
-                if "escape" in event.getKeys(keyList=["escape"]):
+                if stopped.is_set() or "escape" in event.getKeys(keyList=["escape"]):
                     report["status"] = "interrupted"
                     return 0
                 for target, box, label in zip(targets, boxes, labels):
@@ -98,8 +116,12 @@ def main():
                 stamp = win.flip()
                 if i == 0:
                     marker["psychopy_flip_time"] = stamp
+                    marker["host_perf_counter_after_flip"] = time.perf_counter()
                     records.append(marker)
                 frame_index += 1
+        win.recordFrameIntervals = False
+        win.flip()  # return to the background before marking the end
+        report["host_perf_counter_end"] = time.perf_counter()
         report["status"] = "complete"
     except BaseException as error:
         report["status"] = "error"
@@ -107,8 +129,9 @@ def main():
         raise
     finally:
         if win:
-            report["frame_intervals_seconds"] = list(win.frameIntervals)
-            report["dropped_frames"] = win.nDroppedFrames
+            report["frame_intervals_seconds"] = [float(v) for v in win.frameIntervals]
+            report["dropped_frames"] = int(win.nDroppedFrames)
+            report.setdefault("host_perf_counter_end", time.perf_counter())
             win.close()
         report["trials"] = records
         (directory / "stimulus.json").write_text(json.dumps(report, indent=2), encoding="utf-8")

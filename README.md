@@ -90,6 +90,22 @@ An accepted candidate must exceed the absolute score threshold and the score mar
 
 ## Standalone development stimuli
 
+For repeated tests, launch the desktop test runner from the decoding repository root:
+
+```powershell
+.\run-tests.cmd
+```
+
+Or use `python -m ssvep_decoding.launcher` in the environment with Tk and PsychoPy installed. The batch file uses `SSVEP_DECODER_PYTHON` if set, otherwise checks the repository's `.venv`, the user's Conda environment named `venv`, and then `python.exe` on PATH. **Rest only** does not need PsychoPy.
+
+Choose **Single target**, **Four targets**, or **Rest only**. Pick a decoder preset (such as **4 s / 3 harmonics** or **2 s / 2 harmonics**) and adjust the cue/rest durations, repeats, EEG window, gates, serial port, or display settings before clicking **Start test**. Use the display profile picker for a different frame sequence or refresh rate. The default four-target test presents eight trials with 12-second cues and six-second rests; the single-target test defaults to four trials. All tests log commands without sending keys.
+
+Close the maze and any serial monitor first. The launcher prepares the stimulus, opens EEG acquisition, and starts flicker after enough lead-in to fill the configured EEG window. It records a five-second tail after the stimulus. **Escape** in PsychoPy or **Stop** in the launcher ends the run and saves available data.
+
+Use **Run purpose** to choose **Diagnostic**, **Development**, or **Evaluation** before starting. Diagnostic is the default. Use Evaluation for fresh recordings with a protocol and decoder fixed in advance. An optional **Run label** (for example, `contact-check`) is included in the generated name. Each run is saved under `sessions/<purpose>/`, with its test, window length, harmonic count, timestamp, and label in the folder name. See the [session catalog](docs/results/session-catalog.md) for the earlier recordings.
+
+Each run folder contains resolved profiles, child logs, original recordings, and `summary.txt`/`summary.json`. Cued tests show per-target ranking and command emissions, rest activations, EEG timing, and display timing. Rest-only tests report idle scores and activations. Near-50 Hz raw noise is reported by channel when the recording is long enough and sampling is continuous. Cue alignment uses host timestamps and omits transition windows; it does not synchronize EEG to optical onset or establish independent-trial accuracy.
+
 The optional display uses PsychoPy in a separate process, so serial IO and CCA do not run in its frame loop. Install it in a PsychoPy-compatible Python environment using the [official installation guidance](https://www.psychopy.org/download.html). The decoding package requires Python >=3.10; PsychoPy and its GUI dependencies may impose tighter version/platform requirements. In that environment:
 
 ```powershell

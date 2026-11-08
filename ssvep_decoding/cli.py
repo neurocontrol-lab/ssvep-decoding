@@ -3,12 +3,15 @@ import csv
 from datetime import datetime
 import json
 from pathlib import Path
+import os
 import sys
+import threading
 import time
 
 from . import __version__
 from .config import read_profile, reference_frequency, validate
 from .output import Keyboard, KEYS
+from .maze_output import MazeOutput
 from .pipeline import Pipeline
 from .sources import FIELDS, Replay, SerialSource, Synthetic
 
@@ -25,6 +28,22 @@ def load_profiles(args):
     return profiles
 
 
+def launcher_stop_signal(enabled):
+    stopped = threading.Event()
+    if enabled:
+        def watch():
+            try:
+                # Use the raw descriptor so shutdown cannot wait on a
+                # buffered stdin lock held by this daemon thread.
+                os.read(sys.stdin.fileno(), 1)
+            except (OSError, ValueError):
+                pass
+            finally:
+                stopped.set()
+        threading.Thread(target=watch, daemon=True).start()
+    return stopped
+
+
 def run(args):
     profiles = load_profiles(args)
     a, s, d, c = (profiles[k] for k in ("acquisition", "stimulus", "decoder", "control"))
@@ -32,15 +51,23 @@ def run(args):
         raise ValueError("Keyboard output requires live mode and --window-title.")
     if args.keyboard and any(key not in KEYS for key in c["action_keys"].values()):
         raise ValueError("Keyboard keys must be w/a/s/d or left/right/up/down.")
+    maze_control = getattr(args, "maze_control", False)
+    maze_hud = getattr(args, "maze_hud", False) or maze_control
+    if maze_hud and args.mode != "live":
+        raise ValueError("Maze output requires live EEG.")
+    if maze_hud and args.keyboard:
+        raise ValueError("Choose maze output or keyboard output for this run.")
     directory = args.session or Path("sessions") / datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     directory.mkdir(parents=True, exist_ok=False)
-    source, keyboard = None, None
+    launcher_stopped = launcher_stop_signal(getattr(args, "stop_on_stdin", False))
+    source = keyboard = maze = None
     reason, received, updates, commands = "complete", 0, 0, 0
     started = time.perf_counter()
     summary = {"version": __version__, "mode": args.mode, "profiles": profiles,
                "keyboard_enabled": args.keyboard, "window_title": args.window_title,
                "host_start_perf_counter": started,
-               "started_at": datetime.now().astimezone().isoformat()}
+               "started_at": datetime.now().astimezone().isoformat(),
+               "maze_hud_enabled": maze_hud, "maze_control_requested": maze_control}
     try:
         if args.mode == "synthetic":
             source = Synthetic(a, {t["id"]: reference_frequency(s, t) for t in s["targets"]},
@@ -52,27 +79,41 @@ def run(args):
         summary["metadata"] = source.metadata
         if args.keyboard:
             keyboard = Keyboard(args.window_title, c["key_pulse_seconds"])
+        if maze_hud:
+            maze = MazeOutput(s, c, steering=maze_control)
+            maze.warm()
         pipeline = Pipeline(a, s, d, c, source.metadata)
         summary["effective_window_samples"] = pipeline.n
         summary["effective_hop_samples"] = pipeline.hop
         summary["effective_update_seconds"] = pipeline.hop/pipeline.fs
         print(f"Session: {directory.resolve()}\nOutput: {'KEYBOARD ARMED' if keyboard else 'display/log only'}")
+        if maze:
+            print("Maze link: localhost UDP 46081" + (" (auto-start in game; F3 pauses/resumes)" if maze_control else " (monitor only)"))
         with (directory / "raw.csv").open("x", newline="", encoding="utf-8") as raw, \
                 (directory / "events.jsonl").open("x", encoding="utf-8") as events:
             writer = csv.writer(raw)
             writer.writerow(FIELDS+source.metadata["channels"])
             live_start = time.perf_counter()
             for frame in source:
+                if launcher_stopped.is_set():
+                    reason = "launcher_closed"
+                    break
                 received += 1
                 writer.writerow(frame.row)
                 result = pipeline.feed(frame)
+                if maze:
+                    if result is not None:
+                        maze.update(result)
+                    elif updates == 0:
+                        maze.warm()
                 if result is not None:
                     updates += 1
                     result["sequence"] = frame.row[0]
                     result["host_perf_counter"] = time.perf_counter()
                     if keyboard:
                         keyboard.update(result)
-                    result["output_mode"] = "keyboard" if keyboard else "log"
+                    result["output_mode"] = ("keyboard" if keyboard else "maze_control" if maze_control
+                                             else "maze_hud" if maze_hud else "log")
                     events.write(json.dumps(result)+"\n")
                     events.flush()
                     if result["emit"]:
@@ -92,6 +133,8 @@ def run(args):
         raise
     finally:
         try:
+            if maze:
+                maze.close()
             if keyboard:
                 keyboard.close()
         finally:
@@ -129,6 +172,10 @@ def main():
             mode.add_argument("--input", required=True, type=Path, help="Acquisition CSV with companion JSON")
         else:
             mode.add_argument("--port", required=True)
+            mode.add_argument("--stop-on-stdin", action="store_true", help=argparse.SUPPRESS)
+            output = mode.add_mutually_exclusive_group()
+            output.add_argument("--maze-hud", action="store_true", help="Show live scores in the local maze without steering")
+            output.add_argument("--maze-control", action="store_true", help="Send accepted commands to the maze; steering starts automatically in the focused game")
     args = parser.parse_args()
     if not 0 < args.seconds <= 3600:
         parser.error("--seconds must be positive and at most one hour.")

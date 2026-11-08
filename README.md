@@ -118,6 +118,8 @@ Keyboard output is opt-in for each run. The title substring must match the foreg
 
 [Round 1: single-target SSVEP decoding (16 October 2026)](docs/results/2026-10-16-round-01.md) documents the first four target recordings, left/right repeats, and a separate rest baseline. The report includes recording IDs, acquisition/display timing, CCA score comparisons, temporal decisions, exploratory threshold replay, and analysis limitations. Single-target response evidence was observed, while reliable command control and simultaneous four-target accuracy remain unestablished.
 
+The first mastoid left/right runs (`mastoid_left_01` and `mastoid_right_01`) are excluded from subsequent decoder tuning and evaluation. The operator reported that the viewing distance was too large; it was not measured. Their EEG and corresponding stimulus logs are in the local, ignored `sessions/_excluded/mastoid-round-01/` archive. The original winter-cap Round 1 runs, mastoid `_02` repeats, and standalone mastoid rest recording remain available. The rest recording contains no flickering target; keep it identified separately from the stimulus runs.
+
 ## Verification and remaining work
 
 ```powershell

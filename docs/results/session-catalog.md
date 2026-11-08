@@ -2,6 +2,18 @@
 
 Audit of the local recordings available on **8 November 2026**. Paths below are relative to the ignored `sessions/` directory. Existing names are kept so source references in prior reports continue to resolve.
 
+## Finding results locally
+
+Use the decoder session folder name as the source ID. For a launcher recording, use the outer run folder name.
+
+| Output | Local path from the repository root |
+|---|---|
+| Original EEG, stimulus, and run settings | `sessions/<purpose>/<source-id>/` for launcher runs, or the legacy location listed below |
+| New live summary | `results/<source-id>/live/summary.txt` and `summary.json` |
+| Replay summary and decision log | `results/<source-id>/replays/<replay-id>/` |
+
+The output directories are local. Entries below that predate this layout may only have the original recording or a published report. Replaying an existing session creates a new result without modifying the recording. See [command-line examples](../command-line.md#replay-acquisition-recordings), [montage wiring](../montages.md), and the [original Round 1 report](2026-10-16-round-01.md).
+
 | Purpose | Use |
 |---|---|
 | **Diagnostic** | Check acquisition, display timing, contacts, or integration. Use to investigate a problem. |

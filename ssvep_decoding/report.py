@@ -1,4 +1,5 @@
 """Summaries of acquired samples and approximate stimulus-aligned decisions."""
+from bisect import bisect_left
 from collections import Counter
 import json
 import statistics
@@ -46,28 +47,62 @@ def eeg_quality(path, nominal):
     return result
 
 
-def build_summary(folder, mode, status, problem=""):
-    events, notes = [], []
-    def load(relative_path):
-        try:
-            return read_json(folder / relative_path, {})
-        except (OSError, ValueError):
-            notes.append(f"Could not read {relative_path}.")
-            return {}
-    session = load("decoder/session.json")
-    stimulus = load("stimulus/stimulus.json")
-    profile = load("decoder_profile.json")
-    settings = load("settings.json")
-    path = folder / "decoder/events.jsonl"
+def read_events(path, notes):
+    events = []
     if path.is_file():
         for line in path.read_text(encoding="utf-8").splitlines():
             try:
                 events.append(json.loads(line))
             except ValueError:
                 notes.append("Skipped an incomplete decoder event.")
+    return events
+
+
+def replay_times(events, original, hop):
+    # Unwrap relative to the first source decision, including MCU counter rollover.
+    original = [row for row in original if "sequence" in row and "host_perf_counter" in row]
+    origin = original[0]["sequence"] if original else 0
+    modulus = 2**32
+    anchors = {(row["sequence"] - origin) % modulus: row["host_perf_counter"]
+               for row in original}
+    positions = sorted(anchors)
+    times = {}
+    for event in events:
+        sequence = event["sequence"]
+        position = (sequence - origin) % modulus
+        if position in anchors:
+            times[sequence] = anchors[position]
+            continue
+        i = bisect_left(positions, position)
+        if not 0 < i < len(positions):
+            continue
+        left, right = positions[i-1:i+1]
+        if right-left <= 2*hop and anchors[left] < anchors[right]:
+            fraction = (position-left)/(right-left)
+            times[sequence] = anchors[left] + fraction*(anchors[right]-anchors[left])
+    return times
+
+
+def build_summary(folder, mode, status, problem="", *, decoder_dir=None,
+                  raw_path=None, stimulus_path=None, original_dir=None):
+    notes = []
+    def load(path):
+        try:
+            return read_json(path, {})
+        except (OSError, ValueError):
+            notes.append(f"Could not read {path}.")
+            return {}
+    decoder_dir = decoder_dir or folder / "decoder"
+    session = load(decoder_dir / "session.json")
+    stimulus_path = stimulus_path or folder / "stimulus/stimulus.json"
+    stimulus = load(stimulus_path)
+    profiles = session.get("profiles", {})
+    profile = profiles.get("decoder") or load(folder / "decoder_profile.json")
+    settings = load(folder / "settings.json")
+    events = read_events(decoder_dir / "events.jsonl", notes)
     nominal = session.get("metadata", {}).get("sample_rate_hz", 250)
     try:
-        quality = eeg_quality(folder / "decoder/raw.csv", nominal)
+        quality = eeg_quality(raw_path or decoder_dir / "raw.csv", nominal)
     except (OSError, ValueError) as error:
         quality = {}
         notes.append(f"Raw timing summary unavailable: {error}")
@@ -76,6 +111,7 @@ def build_summary(folder, mode, status, problem=""):
     peak = max((e["score"] for e in scored), default=None)
     result = {"mode": mode, "purpose": settings.get("purpose", "unclassified"),
               "run_label": settings.get("run_label", ""), "status": status, "problem": problem, "decoder_profile": profile,
+              "profiles": profiles,
               "eeg": quality, "decoder_stop": session.get("stop_reason"),
               "scored_windows": len(scored), "peak_score": peak,
               "invalid": dict(Counter(e.get("reason") for e in events if not e.get("valid"))),
@@ -89,6 +125,18 @@ def build_summary(folder, mode, status, problem=""):
                          "reported_drops": stimulus.get("dropped_frames"),
                          "largest_interval_ms": 1000*max(intervals) if intervals else None}
     trials = stimulus.get("trials", [])
+    if not trials:
+        notes.append("No stimulus markers are available. Scores and emissions are unlabeled.")
+        return result
+    if original_dir is None:
+        alignment = "live decision host timestamps"
+    else:
+        original = read_events(original_dir / "events.jsonl", notes)
+        hop = load(original_dir / "session.json").get("effective_hop_samples", 0)
+        times = replay_times(scored, original, hop)
+        alignment = "original decision host timestamps matched or interpolated by sample sequence"
+    result["alignment"] = alignment
+    result["stimulus_log"] = str(stimulus_path.resolve())
     targets = {}
     rest_rows = []
     labeled_emits = 0
@@ -99,9 +147,14 @@ def build_summary(folder, mode, status, problem=""):
         if end is None:
             end = onset(t)+t["frame_count"]/stimulus["stimulus_profile"]["refresh_hz"]
         lo = onset(t)+profile.get("window_seconds", 2)+.25
-        rows = [e for e in scored if lo <= e["host_perf_counter"] < end-.15]
-        labeled_emits += sum(e["emit"] for e in rows)
         q = t["cue"]
+        rows = []
+        for event in scored:
+            timestamp = (event.get("host_perf_counter") if original_dir is None
+                         else times.get(event["sequence"]))
+            if timestamp is not None and lo <= timestamp < end-.15 and (q is None or q in event["scores"]):
+                rows.append(event)
+        labeled_emits += sum(e["emit"] for e in rows)
         if q is None:
             rest_rows.extend(rows)
             continue
@@ -120,7 +173,10 @@ def build_summary(folder, mode, status, problem=""):
     result["rest"] = {"windows": len(rest_rows), "peak": max((e["score"] for e in rest_rows), default=None),
                       "emissions": sum(e["emit"] for e in rest_rows)}
     result["unlabeled_emissions"] = sum(emitted.values())-labeled_emits
-    notes.append("Cue/rest labels use host timestamps and exclude transitions. Overlapping windows are not independent trials.")
+    notes.append(f"Cue/rest labels use {alignment} and exclude transitions. "
+                 "Overlapping windows are not independent trials.")
+    if original_dir is not None and not times:
+        notes.append("No replay decisions could be aligned to the original recording.")
     return result
 
 
@@ -131,6 +187,7 @@ def render_summary(r):
     lines = [f"{r['purpose'].capitalize()} · {r['mode']} test — {r['status']}"]
     if r["run_label"]:
         lines.append(f"Run label: {r['run_label']}")
+    lines.append(f"Montage: {(r.get('montage') or {}).get('id', 'unspecified')}")
     if r["problem"]:
         lines.append(r["problem"])
     q = r["eeg"]
@@ -152,9 +209,19 @@ def render_summary(r):
             rank = f"{v['ranked_first']}/{n} ({v['ranked_first']/n:.0%})" if n else "—"
             lines.append(f"{k:16}  {rank:16}  {score(v['mean_score']):8}    "
                          f"{v['correct_emissions']} / {v['wrong_emissions']}")
-    rest = r["rest"]
-    lines.extend(["", f"Rest: {rest['windows']} scored windows, peak {score(rest['peak'])}, {rest['emissions']} emissions"])
+    if "rest" in r:
+        rest = r["rest"]
+        lines.extend(["", f"Rest: {rest['windows']} scored windows, peak {score(rest['peak'])}, {rest['emissions']} emissions"])
     if "unlabeled_emissions" in r:
         lines.append(f"Transition / outside-trial emissions: {r['unlabeled_emissions']}")
     lines.extend(["", *r["notes"]])
     return "\n".join(lines)
+
+
+def save_summary(directory, summary):
+    directory.mkdir(parents=True, exist_ok=True)
+    text = render_summary(summary)
+    for name, contents in (("summary.json", json.dumps(summary, indent=2)), ("summary.txt", text)):
+        with (directory / name).open("x", encoding="utf-8") as file:
+            file.write(contents + "\n")
+    return text

@@ -1,0 +1,7 @@
+{
+  "id": "occipital-mastoid-v1",
+  "channels": {"D1": "O1", "D2": "Oz", "D3": "O2", "D4": "POz"},
+  "bioamp_in_minus": "Right mastoid (shared)",
+  "bioamp_ref": "Left mastoid (shared)",
+  "diagnostic": {"D0": "MCU GND"}
+}

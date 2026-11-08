@@ -10,7 +10,8 @@ import sys
 import time
 
 from .config import read_profile, validate
-from .report import build_summary, render_summary
+from .montage import DEFAULT_MONTAGE, read_montage
+from .report import build_summary, save_summary
 from .stimulus import trial_plan
 
 
@@ -46,6 +47,7 @@ class Experiment:
     height: int = 720
     seed: int = 43
     stimulus_path: str = ""
+    montage: str = DEFAULT_MONTAGE
 
     def prepare(self):
         if self.purpose not in PURPOSES:
@@ -127,9 +129,12 @@ def stop_children(children):
 
 def run_experiment(config, sessions, cancel, notify=lambda _: None, spawn=launch):
     stimulus, decoder, duration = config.prepare()
+    montage = read_montage(config.montage, read_profile("acquisition")["channels"])
     folder = session_path(sessions, config, datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
     folder.mkdir(parents=True, exist_ok=False)
     (folder / "settings.json").write_text(json.dumps(asdict(config), indent=2), encoding="utf-8")
+    montage_path = folder / "montage.json"
+    montage_path.write_text(json.dumps(montage, indent=2), encoding="utf-8")
     stimulus_path, decoder_path = folder / "stimulus_profile.json", folder / "decoder_profile.json"
     for path, profile in ((stimulus_path, stimulus), (decoder_path, decoder)):
         path.write_text(json.dumps(profile, indent=2), encoding="utf-8")
@@ -186,7 +191,8 @@ def run_experiment(config, sessions, cancel, notify=lambda _: None, spawn=launch
         budget = duration if config.mode == "rest" else math.ceil(duration + lead_in(decoder) + 35)
         start_child("decoder", ["-m", "ssvep_decoding", "live", *profiles, "--port", config.port.strip(),
                                 "--seconds", str(budget), "--session", str(folder / "decoder"),
-                                "--ready-file", str(eeg_ready), "--stop-on-stdin"])
+                                "--ready-file", str(eeg_ready), "--stop-on-stdin", "--defer-summary",
+                                *(["--montage", str(montage_path)] if montage else [])])
         wait_for(eeg_ready.exists, 25, tuple(children), "No EEG samples arrived. See decoder.log.")
         if config.mode == "rest":
             notify(f"Recording {duration:g} s of rest with flicker off…")
@@ -224,7 +230,6 @@ def run_experiment(config, sessions, cancel, notify=lambda _: None, spawn=launch
     elif status == "complete" and children["decoder"].returncode != 0:
         status, problem = "error", "Decoder failed before clean shutdown. See decoder.log."
     summary = build_summary(folder, config.mode, status, problem)
-    (folder / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
-    text = render_summary(summary)
-    (folder / "summary.txt").write_text(text + "\n", encoding="utf-8")
-    return folder, text
+    output = sessions.resolve().parent / "results" / folder.name / "live"
+    summary.update(source_session=str(folder), montage=montage)
+    return folder, save_summary(output, summary) + f"\n\nResults: {output}"

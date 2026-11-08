@@ -63,13 +63,17 @@ class ExperimentTests(unittest.TestCase):
                 patch("ssvep_decoding.experiment.lead_in", return_value=.05), \
                 patch("ssvep_decoding.experiment.TAIL_SECONDS", .05):
             config = Experiment(purpose="development", run_label="Protocol A")
-            folder, text = run_experiment(config, Path(temp), threading.Event(), spawn=spawn)
-            summary = json.loads((folder/"summary.json").read_text())
+            folder, text = run_experiment(config, Path(temp)/"sessions", threading.Event(), spawn=spawn)
+            output = Path(temp)/"results"/folder.name/"live"
+            summary = json.loads((output/"summary.json").read_text())
             self.assertEqual(summary["status"], "complete", text)
             self.assertEqual(summary["decoder_stop"], "launcher_closed")
             self.assertEqual(summary["purpose"], "development")
             self.assertEqual(summary["run_label"], "Protocol A")
-            self.assertTrue((folder/"summary.txt").is_file())
+            self.assertTrue((output/"summary.txt").is_file())
+            montage = json.loads((folder/"montage.json").read_text())
+            self.assertEqual(montage["channels"], {"D1": "O1", "D2": "Oz", "D3": "O2", "D4": "POz"})
+            self.assertEqual(summary["montage"], montage)
 
     def test_cancel_before_start_does_not_open_hardware(self):
         cancelled = threading.Event()
@@ -77,8 +81,11 @@ class ExperimentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             def spawn(*_):
                 self.fail("Cancelled experiment launched a process")
-            folder, _ = run_experiment(Experiment(), Path(temp), cancelled, spawn=spawn)
-            self.assertEqual(json.loads((folder/"summary.json").read_text())["status"], "cancelled")
+            folder, _ = run_experiment(Experiment(montage=""), Path(temp)/"sessions", cancelled, spawn=spawn)
+            output = Path(temp)/"results"/folder.name/"live"
+            summary = json.loads((output/"summary.json").read_text())
+            self.assertEqual(summary["status"], "cancelled")
+            self.assertIsNone(summary["montage"])
 
     def test_report_separates_cue_rest_and_transitions(self):
         def event(t, direction, emit):

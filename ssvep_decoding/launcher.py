@@ -10,6 +10,7 @@ from tkinter.scrolledtext import ScrolledText
 
 from .config import read_profile
 from .experiment import Experiment, PRESETS, PURPOSES, run_experiment
+from .montage import DEFAULT_MONTAGE
 
 
 TESTS = {"Four targets": "four", "Single target": "single", "Rest only": "rest"}
@@ -83,12 +84,13 @@ class Launcher:
         field(decode, 6, "Minimum score", "min_score", default.min_score)
         field(decode, 7, "Minimum margin", "min_margin", default.min_margin)
         field(decode, 8, "Persistence (s)", "persistence_seconds", default.persistence_seconds)
+        field(decode, 9, "Montage", "montage", default.montage, (DEFAULT_MONTAGE, "Unspecified"))
         self.purpose_note = tk.StringVar()
         ttk.Label(decode, textvariable=self.purpose_note, wraplength=315, justify="left").grid(
-            row=9, column=0, columnspan=2, sticky="w", pady=(8, 0))
+            row=10, column=0, columnspan=2, sticky="w", pady=(8, 0))
         self.duration = tk.StringVar()
         ttk.Label(decode, textvariable=self.duration, wraplength=300, justify="left").grid(
-            row=10, column=0, columnspan=2, sticky="w", pady=(6, 0))
+            row=11, column=0, columnspan=2, sticky="w", pady=(6, 0))
 
         actions = ttk.Frame(body)
         actions.grid(row=3, column=0, columnspan=2, sticky="ew", pady=10)
@@ -98,6 +100,8 @@ class Launcher:
         self.stop_button.pack(side="left", padx=6)
         self.folder_button = ttk.Button(actions, text="Open session folder", command=self.open_folder, state="disabled")
         self.folder_button.pack(side="left")
+        self.results_button = ttk.Button(actions, text="Open results", command=self.open_results, state="disabled")
+        self.results_button.pack(side="left", padx=6)
         self.status = tk.StringVar(value="Ready")
         ttk.Label(actions, textvariable=self.status, wraplength=400).pack(side="left", padx=10)
         self.results = ScrolledText(body, height=12, wrap="word", font=("Consolas", 10), padx=8, pady=8)
@@ -185,6 +189,7 @@ class Launcher:
         kwargs = {"mode": mode, "target": self.value("target"), "port": self.value("port"),
                   "purpose": self.value("purpose").lower(), "run_label": self.value("run_label").strip(),
                   "windowed": self.windowed.get(), "stimulus_path": self.stimulus_path}
+        kwargs["montage"] = "" if self.value("montage") == "Unspecified" else self.value("montage")
         for key in ("window_seconds", "min_score", "min_margin", "persistence_seconds"):
             kwargs[key] = float(self.value(key))
         kwargs["harmonics"] = int(self.value("harmonics"))
@@ -210,6 +215,7 @@ class Launcher:
         self.start_button.configure(state="disabled")
         self.stop_button.configure(state="normal")
         self.folder_button.configure(state="disabled")
+        self.results_button.configure(state="disabled")
         self.refresh_fields()
         self.status.set("Starting…")
         self.show("Running test. Press Escape in PsychoPy or Stop here to end it.")
@@ -245,11 +251,17 @@ class Launcher:
         self.results.configure(state="disabled")
 
     def open_folder(self):
-        if self.last_folder:
-            if hasattr(os, "startfile"):
-                os.startfile(self.last_folder)
-            else:
-                messagebox.showinfo("Session folder", str(self.last_folder), parent=self.root)
+        self.open_path(self.last_folder)
+
+    def open_results(self):
+        path = Path("results").resolve() / self.last_folder.name / "live"
+        self.open_path(path)
+
+    def open_path(self, path):
+        if hasattr(os, "startfile"):
+            os.startfile(path)
+        else:
+            messagebox.showinfo("Folder", str(path), parent=self.root)
 
     def poll(self):
         while True:
@@ -268,6 +280,7 @@ class Launcher:
                 self.start_button.configure(state="normal")
                 self.stop_button.configure(state="disabled")
                 self.folder_button.configure(state="normal" if self.last_folder else "disabled")
+                self.results_button.configure(state="normal" if self.last_folder else "disabled")
                 self.refresh_fields()
                 if self.closing:
                     self.root.destroy()

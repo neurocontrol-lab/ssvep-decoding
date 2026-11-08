@@ -187,13 +187,37 @@ class SessionTests(unittest.TestCase):
             args = argparse.Namespace(**base, mode="synthetic", session=Path(temp)/"synth")
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(run(args), 0)
-                replay = argparse.Namespace(**base, mode="replay", input=args.session/"raw.csv", session=Path(temp)/"replay")
+                metadata = args.session/"session.json"
+                recorded = json.loads(metadata.read_text())
+                recorded["montage"] = {"id": "example"}
+                metadata.write_text(json.dumps(recorded))
+                event_log = args.session/"events.jsonl"
+                original = [json.loads(line) for line in event_log.read_text().splitlines()]
+                for row in original:
+                    row["host_perf_counter"] = 100 + row["time_seconds"]
+                event_log.write_text("\n".join(map(json.dumps, original)))
+                stimulus = Path(temp)/"stimulus.json"
+                stimulus.write_text(json.dumps({"trials": [{"cue": "left", "host_perf_counter_before_flip": 100}],
+                                                "host_perf_counter_end": 106}))
+                decoder = Path(temp)/"decoder.json"
+                profile = recorded["profiles"]["decoder"]
+                profile["window_seconds"] = 3
+                decoder.write_text(json.dumps(profile))
+                replay = argparse.Namespace(**(base | {"decoder": decoder}), mode="replay", input=args.session/"raw.csv",
+                                            stimulus_log=stimulus, session=Path(temp)/"replay")
                 self.assertEqual(run(replay), 0)
             events = [json.loads(line) for line in (replay.session/"events.jsonl").read_text().splitlines()]
             self.assertTrue(any(e["emit"] and e["accepted"] == "left" for e in events))
             session = json.loads((replay.session/"session.json").read_text())
             self.assertEqual(session["frames_received"], 1500)
             self.assertFalse(session["keyboard_enabled"])
+            self.assertFalse((replay.session/"raw.csv").exists())
+            self.assertFalse((replay.session/"raw.json").exists())
+            report = json.loads((replay.session/"summary.json").read_text())
+            self.assertEqual(report["montage"], recorded["montage"])
+            self.assertEqual(Path(report["source_recording"]), replay.input)
+            self.assertEqual(report["decoder_profile"]["window_seconds"], 3)
+            self.assertGreater(report["targets"]["left"]["ranked_first"], 0)
 
     def test_keyboard_cannot_be_armed_for_synthetic(self):
         args = argparse.Namespace(mode="synthetic", acquisition=None, stimulus=None,

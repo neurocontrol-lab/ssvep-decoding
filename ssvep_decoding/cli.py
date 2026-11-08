@@ -1,9 +1,11 @@
 import argparse
 import csv
+from contextlib import ExitStack
 from datetime import datetime
 import json
 from pathlib import Path
 import os
+import re
 import sys
 import threading
 import time
@@ -12,7 +14,9 @@ from . import __version__
 from .config import read_profile, reference_frequency, validate
 from .output import Keyboard, KEYS
 from .maze_output import MazeOutput
+from .montage import read_montage
 from .pipeline import Pipeline
+from .report import build_summary, read_json, save_summary
 from .sources import FIELDS, Replay, SerialSource, Synthetic
 
 
@@ -57,7 +61,42 @@ def run(args):
         raise ValueError("Maze output requires live EEG.")
     if maze_hud and args.keyboard:
         raise ValueError("Choose maze output or keyboard output for this run.")
-    directory = args.session or Path("sessions") / datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    results = Path("results").resolve()
+    replay = args.mode == "replay"
+    stimulus_path = getattr(args, "stimulus_log", None)
+    report_options = {}
+    report_mode = args.mode
+    lineage = {}
+    if replay:
+        recording = args.input.resolve()
+        original_dir = recording.parent
+        original_session = original_dir.parent if original_dir.name == "decoder" else original_dir
+        original_metadata = read_json(original_dir / "session.json", {}) if recording.name == "raw.csv" else {}
+        if stimulus_path and not original_metadata:
+            raise ValueError("--stimulus-log requires the original decoder recording and session.json.")
+        if recording.name == "raw.csv":
+            montage = original_metadata.get("montage") or read_json(original_session / "montage.json", None)
+        else:
+            montage = None
+        source_id = original_session.name if recording.name == "raw.csv" else recording.stem
+        label = re.sub(r"[^a-z0-9]+", "-", getattr(args, "label", "").lower()).strip("-")[:48]
+        setting = f"{d['window_seconds']:g}s-{d['harmonics']}h".replace(".", "p")
+        replay_id = "_".join(filter(None, (setting, stamp, label)))
+        directory = args.session or results / source_id / "replays" / replay_id
+        output = directory
+        report_folder = original_session
+        settings = read_json(original_session / "settings.json", {}) if original_metadata else {}
+        report_mode = settings.get("mode", "replay")
+        report_options.update(raw_path=recording, stimulus_path=stimulus_path, original_dir=original_dir)
+        lineage = {"source_recording": str(recording), "source_session": str(original_session),
+                   "replay_label": getattr(args, "label", "")}
+    else:
+        montage = read_montage(getattr(args, "montage", None), a["channels"])
+        directory = args.session or Path("sessions") / stamp
+        report_folder = directory
+        output = results / directory.resolve().name / "live"
+        lineage = {"source_session": str(directory.resolve())}
     directory.mkdir(parents=True, exist_ok=False)
     launcher_stopped = launcher_stop_signal(getattr(args, "stop_on_stdin", False))
     ready_file = getattr(args, "ready_file", None)
@@ -68,7 +107,9 @@ def run(args):
                "keyboard_enabled": args.keyboard, "window_title": args.window_title,
                "host_start_perf_counter": started,
                "started_at": datetime.now().astimezone().isoformat(),
+               "montage": montage,
                "maze_hud_enabled": maze_hud, "maze_control_requested": maze_control}
+    summary.update(lineage)
     try:
         if args.mode == "synthetic":
             source = Synthetic(a, {t["id"]: reference_frequency(s, t) for t in s["targets"]},
@@ -90,17 +131,20 @@ def run(args):
         print(f"Session: {directory.resolve()}\nOutput: {'KEYBOARD ARMED' if keyboard else 'display/log only'}")
         if maze:
             print("Maze link: localhost UDP 46081" + (" (auto-start in game; F3 pauses/resumes)" if maze_control else " (monitor only)"))
-        with (directory / "raw.csv").open("x", newline="", encoding="utf-8") as raw, \
-                (directory / "events.jsonl").open("x", encoding="utf-8") as events:
-            writer = csv.writer(raw)
-            writer.writerow(FIELDS+source.metadata["channels"])
+        with ExitStack() as files:
+            events = files.enter_context((directory / "events.jsonl").open("x", encoding="utf-8"))
+            if not replay:
+                raw = files.enter_context((directory / "raw.csv").open("x", newline="", encoding="utf-8"))
+                writer = csv.writer(raw)
+                writer.writerow(FIELDS+source.metadata["channels"])
             live_start = time.perf_counter()
             for frame in source:
                 if launcher_stopped.is_set():
                     reason = "launcher_closed"
                     break
                 received += 1
-                writer.writerow(frame.row)
+                if not replay:
+                    writer.writerow(frame.row)
                 if received == 1 and ready_file is not None:
                     ready_file.touch(exist_ok=False)
                 result = pipeline.feed(frame)
@@ -124,7 +168,7 @@ def run(args):
                         print(f"{result['time_seconds']:7.2f}s {result['accepted']:10} -> {result['action']:10} [{result['key']}] score={result['score']:.3f} margin={result['margin']:.3f}")
                     elif not result["valid"]:
                         print(f"{result['time_seconds']:7.2f}s no command: {result['reason']}")
-                if received % 250 == 0:
+                if not replay and received % 250 == 0:
                     raw.flush()
                 if args.mode == "live" and time.perf_counter()-live_start >= args.seconds:
                     reason = "requested_duration"
@@ -148,10 +192,23 @@ def run(args):
                 summary.update(stop_reason=reason, frames_received=received,
                                decision_updates=updates, command_events=commands)
                 (directory / "session.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
-                if source:
+                if source and not replay:
                     # Only propagate #end if the source was consumed through EOF.
                     (directory / "raw.json").write_text(json.dumps({"metadata": source.metadata,
                         "end": source.end if reason == "complete" else None}, indent=2), encoding="utf-8")
+                if replay or (args.mode == "live" and not getattr(args, "defer_summary", False)):
+                    problem = reason if reason.startswith("error:") else ""
+                    status = "error" if problem else "interrupted" if reason == "interrupted" else "complete"
+                    try:
+                        report = build_summary(report_folder, report_mode, status, problem,
+                                               decoder_dir=directory, **report_options)
+                        report.update(montage=montage, **lineage)
+                        save_summary(output, report)
+                        print(f"Results: {output.resolve()}")
+                    except (OSError, ValueError, KeyError, TypeError) as error:
+                        if status == "complete":
+                            raise
+                        print(f"Could not summarize partial session: {error}", file=sys.stderr)
     print(f"Saved {received} frames, {updates} decisions, {commands} command events.")
     if updates == 0:
         print("No complete eligible window: check capture duration and timing/quality diagnostics.")
@@ -173,8 +230,12 @@ def main():
             mode.add_argument("--seed", type=int, default=42)
         elif name == "replay":
             mode.add_argument("--input", required=True, type=Path, help="Acquisition CSV with companion JSON")
+            mode.add_argument("--label", default="", help="Optional replay label")
+            mode.add_argument("--stimulus-log", type=Path, help="Matching original stimulus.json for a legacy decoder session")
         else:
             mode.add_argument("--port", required=True)
+            mode.add_argument("--montage", help="Montage ID or path to a montage JSON")
+            mode.add_argument("--defer-summary", action="store_true", help=argparse.SUPPRESS)
             mode.add_argument("--stop-on-stdin", action="store_true", help=argparse.SUPPRESS)
             mode.add_argument("--ready-file", type=Path, help=argparse.SUPPRESS)
             output = mode.add_mutually_exclusive_group()
